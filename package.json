@@ -1,0 +1,17 @@
+{
+  "name": "address-parser",
+  "version": "1.0.0",
+  "description": "Chinese address parser",
+  "main": "dist/address-parser.js",
+  "scripts": {
+    "build": "webpack --mode production",
+    "test": "node test/test.js"
+  },
+  "keywords": ["address", "parser", "china"],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "webpack": "^5.89.0",
+    "webpack-cli": "^5.1.4"
+  }
+}
