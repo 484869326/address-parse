@@ -5,7 +5,7 @@
   "main": "dist/address-parser.js",
   "scripts": {
     "build": "webpack --mode production",
-    "test": "node test/test.js"
+    "dev": "webpack --mode production && node ./index.js"
   },
   "keywords": ["address", "parser", "china"],
   "author": "",

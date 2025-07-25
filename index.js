@@ -1,8 +1,8 @@
 // // 引入 zh-address-parse 库
-import AddressParse from './dist/address-parse.min.js';
+import AddressParse from './dist/index.min.js';
 
 // 示例地址
-const address = '刘海江13311111111河南省省直辖县级行政区划济源市沁园路丹尼斯';
+const address = '王晓光 万州区 太平镇，13311111111';
 
 // 解析地址
 const result = AddressParse(address);

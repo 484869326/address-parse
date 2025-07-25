@@ -5,7 +5,7 @@ module.exports = {
     entry: './address-parse.js',
     output: {
         path: path.resolve(__dirname, 'dist'),
-        filename: 'index.js',
+        filename: 'index.min.js',
         library: {
             name: 'AddressParse',
             type: 'umd',
