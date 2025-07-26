@@ -1,6 +1,11 @@
 const zhCnNames = require('./names.json');
 const addressJson = require('./provinceList.json');
 
+// Special handling for SAR (Special Administrative Regions)
+const isSpecialAdministrativeRegion = (provinceName) => {
+    return provinceName === '香港特别行政区' || provinceName === '澳门特别行政区';
+}
+
 const provinces = addressJson.reduce((per, cur) => {
     const { children, ...others } = cur
     return per.concat(others)
@@ -17,6 +22,24 @@ const areas = addressJson.reduce((per, cur) => {
         return p.concat(c.children ? c.children.map(({ children, ...others }) => ({ ...others, cityCode, provinceCode, })) : [])
     }, []) : [])
 }, [])
+
+// 为特别行政区添加特殊处理
+const sarAreas = addressJson.reduce((per, cur) => {
+    if (isSpecialAdministrativeRegion(cur.name)) {
+        const provinceCode = cur.code;
+        const cityCode = cur.children[0].code;
+        return per.concat(cur.children[0].children.map(area => ({
+            code: area.code,
+            name: area.name,
+            cityCode,
+            provinceCode
+        })));
+    }
+    return per;
+}, []);
+
+// 将特别行政区的区域添加到areas中
+areas.push(...sarAreas);
 
 let provinceString = JSON.stringify(provinces)
 let cityString = JSON.stringify(cities)
@@ -93,12 +116,20 @@ const AddressParse = (address, options) => {
     if (detail && detail.length > 0) {
         const copyDetail = [...detail].filter(item => !!item)
         copyDetail.sort((a, b) => a.length - b.length)
-        // 排序后从最短的开始找名字，没找到的话就看第一个是不是咯
-        const index = copyDetail.findIndex(item => judgeFragmentIsName(item, nameMaxLength))
+
+        // 如果文本中包含括号，不应该被识别为名字
+        const index = copyDetail.findIndex(item => {
+            // 如果包含括号，不是名字
+            if (/[（(][^）)]*[）)]/.test(item)) {
+                return false;
+            }
+            return judgeFragmentIsName(item, nameMaxLength);
+        });
+
         let name = ''
         if (~index) {
             name = copyDetail[index]
-        } else if (copyDetail[0] && copyDetail[0].length <= nameMaxLength && /[\u4E00-\u9FA5]/.test(copyDetail[0])) {
+        } else if (copyDetail[0] && copyDetail[0].length <= nameMaxLength && /[\u4E00-\u9FA5]/.test(copyDetail[0]) && !/[（(][^）)]*[）)]/.test(copyDetail[0])) {
             name = copyDetail[0]
         }
 
@@ -111,12 +142,21 @@ const AddressParse = (address, options) => {
 
     const provinceName = province && province.name
     let cityName = city && city.name
+
     // 重庆市下的县级行政区是在"县"下面，所以需要特殊处理
-    if (provinceName === '重庆市' && area && area.code && area.code.startsWith('5002')) {
-        cityName = '县'
+    if (provinceName === '重庆市') {
+        // 如果区域代码以5002开头，说明是县级市
+        if (area && area.code && area.code.startsWith('5002')) {
+            cityName = '县'
+            // 从详细地址中移除可能被错误添加的"县"前缀
+            if (detail && detail.length > 0) {
+                detail = detail.map(item => item.replace(/^县/, ''))
+            }
+        }
     } else if (~['市辖区', '区', '县', '镇'].indexOf(cityName)) {
         cityName = provinceName
     }
+
     return Object.assign(parseResult, {
         province: provinceName || '',
         city: cityName || '',
@@ -200,69 +240,107 @@ const parseRegionWithRegexp = (fragment, hasParseResult) => {
         if (province[0]) {
             fragment = fragment.replace(new RegExp(matchStr, 'g'), '')
         }
-
     }
 
     if (city.length === 0) {
-        for (let i = 1; i < fragment.length; i++) {
-            const str = fragment.substring(0, i + 1)
-            const regexCity = new RegExp(`\{\"code\":\"[0-9]{1,6}\",\"name\":\"${str}[\u4E00-\u9FA5]*?\",\"provinceCode\":\"${province[0] ? `${province[0].code}` : '[0-9]{1,6}'}\"\}`, 'g')
-            const matchCity = cityString.match(regexCity)
-            if (matchCity) {
-                const cityObj = JSON.parse(matchCity[0])
-                if (matchCity.length === 1) {
-                    city = []
-                    matchStr = str
-                    city.push(cityObj)
+        if (province[0] && isSpecialAdministrativeRegion(province[0].name)) {
+            // 对于特别行政区，使用省级单位作为市级单位
+            const cityObj = addressJson.find(p => p.name === province[0].name)?.children[0];
+            if (cityObj) {
+                city.push({
+                    code: cityObj.code,
+                    name: province[0].name,
+                    provinceCode: province[0].code
+                });
+            }
+        } else {
+            for (let i = 1; i < fragment.length; i++) {
+                const str = fragment.substring(0, i + 1)
+                const regexCity = new RegExp(`\{\"code\":\"[0-9]{1,6}\",\"name\":\"${str}[\u4E00-\u9FA5]*?\",\"provinceCode\":\"${province[0] ? `${province[0].code}` : '[0-9]{1,6}'}\"\}`, 'g')
+                const matchCity = cityString.match(regexCity)
+                if (matchCity) {
+                    const cityObj = JSON.parse(matchCity[0])
+                    if (matchCity.length === 1) {
+                        city = []
+                        matchStr = str
+                        city.push(cityObj)
+                    }
+                } else {
+                    break
                 }
-            } else {
-                break
+            }
+            if (city[0]) {
+                const { provinceCode } = city[0]
+                fragment = fragment.replace(new RegExp(matchStr, 'g'), '')
+                if (province.length === 0) {
+                    const regexProvince = new RegExp(`\{\"code\":\"${provinceCode}\",\"name\":\"[\u4E00-\u9FA5]+?\"}`, 'g')
+                    const matchProvince = provinceString.match(regexProvince)
+                    province.push(JSON.parse(matchProvince[0]))
+                }
             }
         }
-        if (city[0]) {
-            const { provinceCode } = city[0]
-            fragment = fragment.replace(new RegExp(matchStr, 'g'), '')
-            if (province.length === 0) {
-                const regexProvince = new RegExp(`\{\"code\":\"${provinceCode}\",\"name\":\"[\u4E00-\u9FA5]+?\"}`, 'g')
-                const matchProvince = provinceString.match(regexProvince)
-                province.push(JSON.parse(matchProvince[0]))
-            }
-        }
-
     }
 
     if (area.length === 0) {
-        for (let i = 1; i < fragment.length; i++) {
-            const str = fragment.substring(0, i + 1)
-            const regexArea = new RegExp(`\{\"code\":\"[0-9]{1,9}\",\"name\":\"${str}[\u4E00-\u9FA5]*?\",\"cityCode\":\"${city[0] ? city[0].code : '[0-9]{1,6}'}\",\"provinceCode\":\"${province[0] ? `${province[0].code}` : '[0-9]{1,6}'}\"\}`, 'g')
-            const matchArea = areaString.match(regexArea)
-            if (matchArea) {
-                const areaObj = JSON.parse(matchArea[0])
-                if (matchArea.length === 1) {
-                    area = []
-                    matchStr = str
-                    area.push(areaObj)
+        if (province[0] && isSpecialAdministrativeRegion(province[0].name)) {
+            // 对于特别行政区，直接从原始数据中查找区域
+            const sarAreas = addressJson.find(p => p.name === province[0].name)?.children[0]?.children;
+            if (sarAreas) {
+                for (let i = 1; i < fragment.length; i++) {
+                    const str = fragment.substring(0, i + 1)
+                    const matchedArea = sarAreas.find(a => a.name.startsWith(str));
+                    if (matchedArea) {
+                        if (matchedArea.name === str) {
+                            area = []
+                            matchStr = str
+                            area.push({
+                                code: matchedArea.code,
+                                name: matchedArea.name,
+                                cityCode: city[0].code,
+                                provinceCode: province[0].code
+                            });
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
                 }
-            } else {
-                break
+                if (area[0]) {
+                    fragment = fragment.replace(matchStr, '')
+                }
             }
-        }
-        if (area[0]) {
-            const { provinceCode, cityCode } = area[0]
-            fragment = fragment.replace(matchStr, '')
-            if (province.length === 0) {
-                const regexProvince = new RegExp(`\{\"code\":\"${provinceCode}\",\"name\":\"[\u4E00-\u9FA5]+?\"}`, 'g')
-                const matchProvince = provinceString.match(regexProvince)
-                province.push(JSON.parse(matchProvince[0]))
+        } else {
+            for (let i = 1; i < fragment.length; i++) {
+                const str = fragment.substring(0, i + 1)
+                const regexArea = new RegExp(`\{\"code\":\"[0-9]{1,9}\",\"name\":\"${str}[\u4E00-\u9FA5]*?\",\"cityCode\":\"${city[0] ? city[0].code : '[0-9]{1,6}'}\",\"provinceCode\":\"${province[0] ? `${province[0].code}` : '[0-9]{1,6}'}\"\}`, 'g')
+                const matchArea = areaString.match(regexArea)
+                if (matchArea) {
+                    const areaObj = JSON.parse(matchArea[0])
+                    if (matchArea.length === 1) {
+                        area = []
+                        matchStr = str
+                        area.push(areaObj)
+                    }
+                } else {
+                    break
+                }
             }
-            if (city.length === 0) {
-                const regexCity = new RegExp(`\{\"code\":\"${cityCode}\",\"name\":\"[\u4E00-\u9FA5]+?\",\"provinceCode\":\"${provinceCode}\"\}`, 'g')
-                const matchCity = cityString.match(regexCity)
-                city.push(JSON.parse(matchCity[0]))
+            if (area[0]) {
+                const { provinceCode, cityCode } = area[0]
+                fragment = fragment.replace(matchStr, '')
+                if (province.length === 0) {
+                    const regexProvince = new RegExp(`\{\"code\":\"${provinceCode}\",\"name\":\"[\u4E00-\u9FA5]+?\"}`, 'g')
+                    const matchProvince = provinceString.match(regexProvince)
+                    province.push(JSON.parse(matchProvince[0]))
+                }
+                if (city.length === 0) {
+                    const regexCity = new RegExp(`\{\"code\":\"${cityCode}\",\"name\":\"[\u4E00-\u9FA5]+?\",\"provinceCode\":\"${provinceCode}\"\}`, 'g')
+                    const matchCity = cityString.match(regexCity)
+                    city.push(JSON.parse(matchCity[0]))
+                }
             }
         }
     }
-
 
     // 解析完省市区如果还存在地址，则默认为详细地址
     if (fragment.length > 0) {
@@ -422,7 +500,7 @@ const judgeFragmentIsName = (fragment, nameMaxLength) => {
         return fragment
     }
 
-    const filters = ['街道', '乡镇', '镇', '乡']
+    const filters = ['街道', '乡镇', '镇', '乡', '公司', '厂']
     if (~filters.findIndex(item => ~fragment.indexOf(item))) {
         return '';
     }
@@ -475,7 +553,7 @@ const filterPostalCode = (address) => {
 }
 
 /**
- * 地址清洗
+ * 清洗地址
  * @param address
  * @returns {*}
  */
@@ -511,7 +589,11 @@ const cleanAddress = (address, textFilter = []) => {
         address = address.replace(new RegExp(str, 'g'), ' ')
     })
 
-    const pattern = new RegExp("[`~!@#$^&*()=|{}':;',\\[\\]\.<>/?~！@#￥……&*（）——|{}【】‘；：”“’。，、？]", 'g')
+    // 处理重庆市的特殊情况
+    address = address.replace(/重庆市县/g, '重庆市')
+
+    const pattern = /[`~!@#$^&*=|{}':;',\[\]\.<>/?~！@#￥……&*——|{}【】'；：""'。，、？]/g
+    // 不要替换括号，因为括号可能是地址的一部分
     address = address.replace(pattern, ' ')
 
     // 多个空格replace为一个
